@@ -1,0 +1,15 @@
+# Installed utility skills (local dev tools, not part of distribution)
+.agents/
+skills-lock.json
+
+# OS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+
+# SDD worktrees
+.worktrees/
+.superpowers/
