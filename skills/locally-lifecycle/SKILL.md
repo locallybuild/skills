@@ -1,6 +1,6 @@
 ---
 name: locally-lifecycle
-description: Start, stop, restart and check a Locally instance. Use when Locally needs to be running and is not, when a command fails because nothing is listening, or when the user wants to stop or restart it. Covers why `locally build` is the only way to start one on a developer machine, and how to tell when an instance is ready. Triggers on "start locally", "stop locally", "restart locally", "is locally running", "locally isn't running", "nothing listening", "connection refused".
+description: Start, stop, restart and check a Locally instance. Use when Locally needs to be running and is not, when a command fails because nothing is listening, or when the user wants to stop or restart it. Covers why `locally build` is the only way to start one on a developer machine, how to tell when an instance is ready, and keeping resources and data across restarts with persistent mode and snapshots. Triggers on "start locally", "stop locally", "restart locally", "is locally running", "locally isn't running", "nothing listening", "connection refused", "persist", "keep my resources", "lost everything after restart", "snapshot", "save state", "restore state", "share a snapshot".
 ---
 
 # Locally Lifecycle
@@ -65,7 +65,9 @@ authoritative answer comes from the CLI, and give that command too.
 |---|---|---|
 | Check if running | `locally validate` | Reads the whole machine, and ends with whether an instance is up. Read the output, not the exit code - it exits 0 either way. |
 | Start interactively | `locally build --skip-browser` | Full-screen TUI. Run it in the user's own terminal - an agent cannot usefully run this at all. Include `--skip-browser` in a command you hand over, so the dashboard doesn't grab focus mid-task. |
-| Start in CI | `locally ci` | **CI only** - needs OIDC, so it cannot start an instance on a developer machine. |
+| Start in CI | `locally ci` | **CI only** - built for a prepared CI runner, not a developer machine. See Starting. |
+| Keep state across restarts | `locally build --skip-browser --persist` | Standard plan. Loads the last save, autosaves every 15 minutes, saves on Ctrl-C. |
+| Save / restore everything | `locally snapshot save` / `locally snapshot load <name>` | Standard plan. `load` **replaces** everything in the instance - confirm first. |
 | Stop a CI instance | `locally ci --stop` | Only stops a `locally ci` instance, so CI only too. There is no `locally stop`. |
 | Target another instance | - not supported | Running more than one instance at a time isn't supported today. If you need it, ask in Locally's Discord. |
 
@@ -136,13 +138,17 @@ https://localhost:5678/` is the PowerShell equivalent, and any HTTP client works
 | Command | Where | Notes |
 |---|---|---|
 | `locally build` | a developer machine | Full-screen TUI, opens a browser, runs DNS/container pre-flight. Refuses to run in a CI environment. |
-| `locally ci` | **CI only** | No TUI. Needs OIDC, which a developer machine does not have. |
+| `locally ci` | **CI only** | No TUI. Authenticates as a CI job, and expects the TLS and working-directory variables a CI image provides. |
 
 **On a developer machine, `locally build` is the only way to start an instance.**
-`locally ci` authenticates through the CI provider's OIDC - GitHub Actions' `id-token`,
-for example - so there is nothing for it to authenticate against on a laptop and it
-cannot work there. Never reach for it as a way to start an instance non-interactively;
-that is not a configuration gap the user can close, it is the wrong command. For CI
+`locally ci` signs in as a CI job - with the CI provider's OIDC token (GitHub Actions'
+`id-token`, GitLab's `id_tokens`), or with a CI Key (`LOCALLY_CI_KEY`) for CI systems
+that can't issue one - and expects `LOCALLY_TLS_*` and `LOCALLY_WORKING_DIRECTORY` to
+point at a prepared runner's certificates and workspace. A laptop has none of that.
+Never reach for it as a way to start an instance non-interactively, and don't suggest
+creating a CI Key to make it work there: a CI Key is a long-lived secret for a CI
+system, and using one on a laptop runs the instance under CI's terms rather than the
+user's own sign-in. That is the wrong command, not a configuration gap to close. For CI
 itself, `locally-ci` covers the whole setup.
 
 **An agent cannot usefully run `locally build` either.** It is a full-screen alt-screen
@@ -176,9 +182,18 @@ fit for a prepared CI image:
 | Flag | Environment variable | Skips |
 |---|---|---|
 | `--skip-browser` | - | Opening the dashboard in a browser on launch. Include this in any command you hand the user to run - see Starting. |
+| `--skip-certificate-check` | `LOCALLY_SKIP_CERTIFICATE_CHECK=1` | The check that the TLS certificate covers every name Locally serves. A release that adds a domain fails this until the certificate is regenerated - `locally-setup` covers the fix. |
 | `--skip-dns-check` | `LOCALLY_SKIP_DNS_CHECK=1` | The `*.locally` resolution check |
 | `--skip-docker-check` | `LOCALLY_SKIP_DOCKER_CHECK=1` | The Docker-reaches-Locally check |
 | `--skip-podman-check` | `LOCALLY_SKIP_PODMAN_CHECK=1` | The Podman-reaches-Locally check |
+
+Two more flags aren't checks - they decide whether the instance keeps its state (see
+Keeping State Across Restarts):
+
+| Flag | Does |
+|---|---|
+| `--persist[=<name>]` | Load the state saved last time (in snapshot `default`, or `<name>`), autosave every 15 minutes when something changed, and save on shutdown. Standard plan or above. |
+| `--clear-state` | With `--persist`, discard that saved state and start empty. Destroys the saved state - confirm before suggesting it. |
 
 ## Stopping
 
@@ -206,6 +221,46 @@ Stop the instance the way it was started - Ctrl-C for a `build` instance, `local
 --stop` for a CI instance - then start it again. That's it: there is no separate
 restart command and no wait step to add. If a restart intermittently fails to bind,
 that's a product issue to report, not something to poll around here.
+
+**A restart empties the instance unless it was started with `--persist`.** Before
+asking the user to restart, consider whether they have resources or data they'd lose -
+and if they do, say so, and offer `locally snapshot save` first or `--persist` on the
+next start.
+
+## Keeping State Across Restarts
+
+A plain `locally build` starts empty every time. Two features change that, both needing
+the Standard plan or above:
+
+**Persistent mode - `locally build --persist`.** The instance loads what it saved last
+time, autosaves every 15 minutes when something has changed, and saves again when it
+stops with Ctrl-C. `--persist=<name>` keeps a separate saved state per project (the
+default is `default`); `--clear-state` alongside it starts that state empty.
+`locally snapshot status` shows what persistent mode is doing. An instance that is
+killed instead of stopped skips the shutdown save, so it comes back with the last
+autosave - another reason not to signal the process yourself.
+
+**Snapshots - `locally snapshot`.** A point-in-time copy of every resource and its data,
+saved in the Locally config directory:
+
+| Command | Does |
+|---|---|
+| `locally snapshot save [--name <n>] [--description <d>] [--passphrase]` | Takes a snapshot. Writes are paused while it's taken (clients get a 503 and retry). |
+| `locally snapshot list [--local]` | Lists saved snapshots, and those shared with your teams. |
+| `locally snapshot inspect <name\|path>` | What a snapshot holds, the plugins it needs, and whether a load would be refused - without loading it. |
+| `locally snapshot diff <a> [<b>]` | What changed between a snapshot and the instance now, or between two snapshots. `--json`, and `--exit-code` to fail a script on any difference. Credentials are reported as changed, never shown. |
+| `locally snapshot load <name\|path>` | **Replaces everything in the instance** with the snapshot. All-or-nothing: a refused load leaves the instance as it was. |
+| `locally snapshot share <name>` / `download <name>` | Share with, or fetch from, a Locally Team. Team plan or above; at most 500 MiB. |
+| `locally snapshot delete <name>` | Deletes a saved snapshot. |
+| `locally snapshot status` | Whether a save or load is running. |
+
+`save`, `load`, `inspect` and `diff` against the current state need a running instance.
+
+**`load` is destructive - confirm before running it**, and run `inspect` first when the
+snapshot came from someone else: it may need plugins installed, and those stay installed
+even if the load is then refused. **Snapshots contain credentials** - Key Vault values,
+keys, passwords - so a snapshot headed for a team should be saved with `--passphrase`
+(or `LOCALLY_SNAPSHOT_PASSPHRASE`); say so before sharing one.
 
 ## When to Use Other Skills
 

@@ -139,8 +139,8 @@ to be parsed out of human-formatted output that can change between releases.
 
 Reach for the CLI when:
 
-- **No tool covers it.** Chaos, plugin management, lifecycle, setup, logs, audit and CI
-  are CLI-only.
+- **No tool covers it.** Chaos, plugin management, lifecycle, snapshots, setup, logs,
+  audit and CI are CLI-only.
 - **The user asked for a command.** Someone asking "what do I run" wants something they
   can type and re-run themselves.
 - **You are driving a tool that isn't Locally.** `locally run terraform apply` wraps

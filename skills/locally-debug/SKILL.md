@@ -1,6 +1,6 @@
 ---
 name: locally-debug
-description: Check whether Locally supports a resource provider, resource type or API version, work out why something behaves differently against Locally than against Azure, refresh its reference data, and inject transient failures to test resilience. Use when asked whether Locally supports something, when a call fails unexpectedly, an API version is rejected, a provider seems missing, a VM image or SKU Azure has is unknown here, or the user wants to simulate throttling or outages. Triggers on "does Locally support", "is X supported", "which resource types", "is there a plugin for", "why does this differ", "unsupported api version", "provider is not known", "vm sku not found", "vm size not found", "image not found", "catalogue is out of date", "azure has it but locally doesn't", "refresh reference data", "inject a 429", "simulate an outage", "turn off fault injection", "chaos", "locally logs", "audit log".
+description: Check whether Locally supports a resource provider, resource type or API version, work out why something behaves differently against Locally than against Azure, refresh its reference data, and inject transient failures to test resilience. Use when asked whether Locally supports something, when a call fails unexpectedly, an API version is rejected, a provider seems missing, a VM image or SKU Azure has is unknown here, or the user wants to simulate throttling, outages, failovers, restarts or dropped connections, or data went missing after a restart. Triggers on "does Locally support", "is X supported", "which resource types", "is there a plugin for", "why does this differ", "unsupported api version", "provider is not known", "vm sku not found", "vm size not found", "image not found", "catalogue is out of date", "azure has it but locally doesn't", "refresh reference data", "inject a 429", "simulate an outage", "turn off fault injection", "chaos", "simulate a failover", "restart the database", "freeze the container", "test retry logic", "data gone after restart", "locally logs", "audit log".
 ---
 
 # Locally Debug
@@ -211,31 +211,53 @@ details of any one call.
 ## Chaos: Injecting Transient Failures
 
 `locally chaos` arms transient failures on a running instance - throttling, outages,
-dropped connections, latency, and a handful of surface-specific faults - so retry
-logic, timeout handling and backoff can be tested against something other than the
-happy path. Full surface and fault reference: `references/chaos.md`.
+dropped and cut connections, latency, failovers, restarts and service-specific errors -
+so retry logic, timeout handling, failover and backoff can be tested against something
+other than the happy path. Each fault answers with the service's own error, over the
+protocol the client actually uses (HTTP, AMQP, MQTT, WebSockets, gRPC, the MongoDB wire
+protocol, database connections). Full surface and fault reference: `references/chaos.md`.
 
 **Chaos needs the Standard plan or above.** On Starter every one of these commands is
 refused with a plan message. That is the plan, not a broken instance - see
 `locally-setup`.
 
-The shape in brief: each fault has one rate (0-100, `--percentage`) applied to every
-request no rule claims, plus optional rules that override that rate for a narrower
-scope (`--location`, and on `control-plane` also `--plugin`). There are 11 surfaces -
-`control-plane`, `directory`, and nine data-plane services (`cosmos`, `eventgrid`,
-`eventhub`, `functions`, `keyvault`, `managedhsm`, `monitor`, `servicebus`, `storage`).
-Most surfaces share the same six faults (`403`, `429`, `500`, `drop-connection`,
-`latency`, `outage`); `control-plane` adds five ARM-specific ones and `directory` swaps
-`outage` for `eventual-consistency`. See `references/chaos.md` for the full breakdown.
+The shape in brief: each fault has one rate (0-100, `--percentage`) applied to
+everything no rule claims, plus optional rules that override that rate for a narrower
+scope - `--location`, `--name` for one resource (`acct1`, `rg1/acct1`, or
+`acct1:blob` for one storage endpoint), and on `control-plane` also `--plugin`.
+
+There are 28 surfaces: `control-plane`; `directory` (Graph) and `identity` (sign-in and
+tokens), which are tenant-scoped; and a surface per data-plane service, databases and
+compute included. Every surface has its own fault list - run `locally chaos <surface>
+--help` rather than assuming one surface's faults exist on another. Two splits trip up
+anyone who knew the older layout: **`functions` is Function Apps only** (Web Apps are
+`webapps`, Container Apps `containerapps`), and **`monitor` is queries, metrics and
+alerts only** (sending telemetry is `monitoringestion`).
+
+Faults are either per-request (`429`, `outage`, `stale-read`, ...) or **scheduled**
+(`incident`, `failover`, `freeze`, `exit`, `restart`, `disconnect`, ...), which act on
+running services rather than single requests and **need `--interval`** - one armed
+without it never fires. Faults with a duration take `--seconds` or `--millis`, as a
+maximum (`30`) or a range (`5-20`); throttling and outages take `--retry-after`. See
+`references/chaos.md` for every surface, fault and flag.
 
 ```bash
-# Throttle storage
-locally chaos storage 429 --percentage 100
+# Throttle storage, telling clients to retry after 5 seconds
+locally chaos storage 429 --percentage 100 --retry-after 5s
+
+# Every 10 minutes, maybe take Key Vault down for 30-120 seconds
+locally chaos keyvault incident --percentage 50 --seconds 30-120 --interval 10m
 
 # See what's currently armed
-locally chaos show
-locally chaos storage show
+locally chaos show                 # control plane and every data plane
+locally chaos directory show       # the tenant-scoped surfaces are separate
+locally chaos identity show
 ```
+
+**Identity faults reach `locally` itself.** Commands that sign in - `locally servicebus`,
+the MCP server's deploy and runbook tools - take an `identity` fault like any other
+client. A `locally` command failing to get a token during a chaos test is the test
+working, not a broken install.
 
 **Arming a fault needs nothing from the caller.** Chaos is configured on the instance,
 not in the client, so it is independent of the language, SDK or HTTP library making the
@@ -259,10 +281,12 @@ stays armed and keeps firing, so a fault "turned off" that way still injects fai
 in the scope that rule covers - and `show` will report the rule plainly, which is why
 it is worth reading rather than skimming. `reset` is the only thing that clears rules.
 
-`locally chaos disable` (or `locally chaos directory disable`) is a third action again:
-it flips the master switch off without clearing configured rates, so everything is
-still there when the switch goes back on. Don't leave chaos armed after the test that
-needed it is finished; ask before leaving it armed on purpose.
+`locally chaos disable` (or `locally chaos directory disable`, which covers `directory`
+and `identity`) is a third action again: it flips the master switch off without
+clearing configured rates, so everything is still there when the switch goes back on.
+Don't leave chaos armed after the test that needed it is finished; ask before leaving it
+armed on purpose. A `reset` covers one surface only, so if a test armed several, reset
+each and check all three `show`s.
 
 ## An Image, VM SKU or App Stack Locally Doesn't Know
 
@@ -316,13 +340,26 @@ support check above.
 
 ## Ephemerality Is Not a Bug
 
-Data planes hold **runtime state** - the objects created against them, not
-configuration - and none of it survives a restart. A storage account, a Key Vault
-secret, a Service Bus queue's messages: all gone the next time an instance starts,
-because a fresh instance is exactly that, fresh. This is intended behaviour, not a
-defect to file or work around. If a test suite depends on data surviving a restart,
-that's a gap in the test setup (seed it again after start), not something to report
-against Locally.
+By default, **nothing survives a restart** - resources, and the runtime state data
+planes hold (a Key Vault secret, a Service Bus queue's messages, a blob). A plain
+`locally build` starts empty every time, because a fresh instance is exactly that,
+fresh. This is intended behaviour, not a defect to file or work around.
+
+Keeping state is opt-in, and needs the Standard plan or above:
+
+- **`locally build --persist`** loads what was saved last time, autosaves every 15
+  minutes when something changed, and saves on shutdown. `--persist=<name>` keeps a
+  separate saved state per project; `--clear-state` with it starts that state empty.
+- **`locally snapshot save` / `load`** captures everything at a point in time and
+  restores it later - see `locally-lifecycle`.
+
+So when data is missing after a restart, first ask how the instance was started. A
+plain `locally build` explains it entirely. If it was started with `--persist`, check
+`locally snapshot status` - an instance that was killed rather than stopped with Ctrl-C
+never ran its shutdown save, so it only has what the last autosave captured, up to 15
+minutes behind. A test suite that depends on data surviving a restart without either of
+these has a gap in its setup (seed again after start, or use `--persist`), not a bug to
+report.
 
 ## When to Use Other Skills
 

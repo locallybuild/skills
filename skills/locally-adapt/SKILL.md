@@ -500,6 +500,17 @@ template-level equivalent of Terraform's `count`:
 }
 ```
 
+**Build hostnames from `environment()` or the resource, never from literals** - but know
+that within Locally `environment().suffixes.storage` and `suffixes.keyvaultDns` carry
+the port Storage and Key Vault are served on (`core.storage.locally:5660`,
+`.vault.locally:5661`), matching the endpoints the resources themselves report. A URL or
+connection string built from them works. A **Private DNS Zone named from them** does
+not: `privatelink.blob.${environment().suffixes.storage}` contains a port, and Locally
+refuses it as an invalid zone name. Pass the zone name as a parameter instead, one value
+per target. The same rule covers App Configuration, which moved to
+`{store}.azconfig.locally` in v2026.11 (`{store}.config.locally` is deprecated): take
+the endpoint from the store's `endpoint` property rather than assembling it.
+
 `locally deploy` runs a template directly without wrapping another tool, and takes
 `--parameters` as `.json` or `.bicepparam`; scope is auto-detected from the template's
 `$schema`. See `locally-run`.
