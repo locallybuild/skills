@@ -224,9 +224,13 @@ refused with a plan message. That is the plan, not a broken instance - see
 The shape in brief: each fault has one rate (0-100, `--percentage`) applied to
 everything no rule claims, plus optional rules that override that rate for a narrower
 scope - `--location`, `--name` for one resource (`acct1`, `rg1/acct1`, or
-`acct1:blob` for one storage endpoint), and on `control-plane` also `--plugin`.
+`acct1:blob` for one storage endpoint), on `control-plane` also `--plugin`, and on the
+sites (`webapps`, `containerapps`, `functions`) `--path` for a URL path prefix and
+`--traffic http|websocket` (not on `functions`). Scopes combine on one rule, and a rule
+naming an app outranks one naming only a path or traffic kind - so to spare one app's
+path, put `--name` and `--path` on the same rule.
 
-There are 28 surfaces: `control-plane`; `directory` (Graph) and `identity` (sign-in and
+There are 27 surfaces: `control-plane`; `directory` (Graph) and `identity` (sign-in and
 tokens), which are tenant-scoped; and a surface per data-plane service, databases and
 compute included. Every surface has its own fault list - run `locally chaos <surface>
 --help` rather than assuming one surface's faults exist on another. Two splits trip up
@@ -237,16 +241,23 @@ alerts only** (sending telemetry is `monitoringestion`).
 Faults are either per-request (`429`, `outage`, `stale-read`, ...) or **scheduled**
 (`incident`, `failover`, `freeze`, `exit`, `restart`, `disconnect`, ...), which act on
 running services rather than single requests and **need `--interval`** - one armed
-without it never fires. Faults with a duration take `--seconds` or `--millis`, as a
-maximum (`30`) or a range (`5-20`); throttling and outages take `--retry-after`. See
-`references/chaos.md` for every surface, fault and flag.
+without it never fires. **Nor does one fire the moment it's armed:** each resource rolls
+on its own clock, first at a random point within the first interval, so resources armed
+together fail independently rather than all at once. Allow up to one interval before
+deciding it hasn't worked, and choose the interval with that in mind (`30s` for a quick
+test, not `1h`). Faults with a duration take `--seconds` or `--millis`, as a maximum
+(`30`) or a range (`5-20`); `429`, `outage` and the databases' `too-many-connections`
+take `--retry-after`. See `references/chaos.md` for every surface, fault and flag.
 
 ```bash
 # Throttle storage, telling clients to retry after 5 seconds
 locally chaos storage 429 --percentage 100 --retry-after 5s
 
-# Every 10 minutes, maybe take Key Vault down for 30-120 seconds
+# Each vault rolls every 10 minutes; on a hit it is down for 30-120 seconds
 locally chaos keyvault incident --percentage 50 --seconds 30-120 --interval 10m
+
+# Throttle one web app's API, leaving its pages and WebSockets alone
+locally chaos webapps 429 --percentage 100 --name my-app --traffic http --path /api/
 
 # See what's currently armed
 locally chaos show                 # control plane and every data plane

@@ -25,13 +25,29 @@ Faults come in two shapes, and arming one needs different flags:
 - **Scheduled faults** act on running services rather than on single requests:
   `incident`, `failover`, `freeze`, `exit`, `restart`, `disconnect`, `link-stolen` and
   `stream-reset`. **`--interval` is required** - every interval the fault rolls
-  `--percentage` against each service in scope, and on a hit acts on it. Nothing else
+  `--percentage` against each resource in scope, and on a hit acts on it. Nothing else
   sets a scheduled fault off, so one armed without `--interval` never fires.
+
+**A scheduled fault does not fire the moment it's armed.** Each resource rolls on its
+own clock, and its first roll lands at a random point within the first interval - so
+ten container groups under `exit` fail independently, not all at once (which would read
+as a regional outage rather than ten failures). Two consequences when testing:
+
+- Allow up to one full interval before the first firing, and don't report "it isn't
+  working" sooner. Pick an interval that suits the test - `--interval 30s` fires within
+  30 seconds; `--interval 1h` may not fire for an hour.
+- Resources armed together do not fail together. To fail one resource at a known time,
+  scope a rule to it with `--name` rather than relying on everything firing in step.
+
+A live connection is different: its first roll is one interval after it opens.
 
 `drop-connection` and `latency` are both: they act per request, and with `--interval`
 they *also* cut or stall connections that are already open (AMQP, MQTT, WebSockets,
-gRPC, MongoDB wire protocol, database sessions). For periodic cuts with no per-request
-drops, arm `disconnect` instead.
+gRPC, MongoDB wire protocol, database sessions). The two ways of cutting a connection
+look different to a client: `drop-connection` resets it with nothing said (no close
+frame, no status - `ECONNRESET`), while `disconnect` closes it cleanly in the
+protocol's own terms (a WebSocket gets a `1001 Going Away` close frame first). For
+periodic cuts with no per-request drops, arm `disconnect`.
 
 ## Flags
 
@@ -39,19 +55,44 @@ drops, arm `disconnect` instead.
 |---|---|
 | `--percentage N` | How often the fault fires, 0-100. Required. |
 | `--seconds` / `--millis` | The fault's duration. A bare number is in the flag's unit; `250ms` or `1.5s` means what it says. `N` picks 0..N each firing; `MIN-MAX` (e.g. `30-120`) picks within that range. Required whenever a fault that has a duration fires (`latency`, `incident`, `failover`, `freeze`, `stale-read`, `cold-start`, `slow-body`, `delivery-delay`, `object-being-deleted`, `eventual-consistency`, `lro-delay`, ...). |
-| `--interval` | How often a scheduled fault starts (`30s`, `10m`). Required on scheduled faults; optional on `drop-connection` / `latency`, where it adds live-connection action. |
-| `--retry-after` | The `Retry-After` a throttling or outage answer carries (`5s`, `500ms`). Omitted, the service's usual hint is used. Only offered on faults where a client reads it; refused elsewhere. |
+| `--interval` | How often a scheduled fault rolls for each resource (`30s`, `10m`); the first roll lands at a random point within the first interval. Required on scheduled faults; optional on `drop-connection` / `latency`, where it adds live-connection action. |
+| `--retry-after` | The `Retry-After` the answer carries (`5s`, `500ms`). Offered on `429`, `outage` and the databases' `too-many-connections`; omitted, the service's usual hint is sent. |
 | `--location` | Rule scope: one region, e.g. `london`. |
 | `--name` | Rule scope: one resource - `acct1` in any resource group, `rg1/acct1` in one. On `storage`, add an endpoint to narrow further: `--name acct1:blob` (`blob`, `queue`, `table`, `file`, `dfs`). On `directory` / `identity`, a user or application. |
+| `--traffic` | Rule scope, `webapps` and `containerapps` only: `http` (page loads, API and gRPC calls) or `websocket` (WebSocket handshakes and the connections they open). |
+| `--path` | Rule scope, `webapps`, `containerapps` and `functions`: requests whose path starts with this, e.g. `/api/`. A plain, case-sensitive prefix - `/api` also matches `/apis`, so end it with `/` when that matters. |
 | `--plugin` | Rule scope, `control-plane` only: one ARM provider namespace, e.g. `Microsoft.Compute`. |
 | `--subscription` / `--tenant` | Which subscription (or, on `directory` / `identity`, tenant) to configure. Defaults to the configured one. |
+
+Scope flags combine on one rule. **A rule naming an app outranks one naming only a
+traffic kind or a path.** So to spare one path of an app that has its own rule, put
+`--name` and `--path` on the *same* rule at 0 - a `--path`-only rule at 0 loses to the
+app's rule:
+
+```bash
+locally chaos webapps 500 --percentage 100 --name my-app                         # fault my-app...
+locally chaos webapps 500 --percentage 0 --name my-app --path /health/           # ...but not its health check
+```
+
+`--traffic` and `--path` apply to the faults that act on requests and connections
+(`403`, `429`, `500`, `502`, `504`, `outage`, `latency`, `drop-connection`,
+`disconnect`, `partial-response`, `slow-body`, and `stream-reset` on `webapps`). They
+don't apply to faults that act on the whole app (`freeze`, `exit`, `restart`,
+`cold-start`) or, on `functions`, its triggers (`delivery-*`, `duplicate-delivery`) -
+those have no request to match. Live WebSockets and gRPC calls keep the request that
+opened them, so stream faults honour the scope too. That is what lets one app's agents'
+WebSocket be faulted without taking down its pages or browsers' sockets:
+
+```bash
+locally chaos webapps disconnect --percentage 100 --interval 30s --name my-app --traffic websocket --path /agents/
+```
 
 A value flag left out when editing keeps what the row already has. Region names come
 from the location set the install has applied - the default set is Locally's own
 city-scale names (`berlin`, `london`, `oslo`, ...), not Azure's. Run `locally regions
 list` rather than assuming `westeurope` resolves.
 
-## The 28 Surfaces
+## The 27 Surfaces
 
 | Surface | Scope | What it covers |
 |---|---|---|
@@ -90,13 +131,21 @@ enable` / `disable`, or the same under `identity`) - the top-level switch does n
 touch them, and theirs does not touch anything else.
 
 **Identity faults affect Locally's own commands too.** Anything that signs in -
-`locally servicebus`, the deploy and runbook tools of `locally mcp` - takes the fault like any other client. Locally's background work (autoscale,
-diagnostic settings) does not. If a `locally` command starts failing to get a token
+`locally servicebus`, the deploy and runbook tools of `locally mcp` - takes the fault
+like any other client. Locally's background work (autoscale, diagnostic settings) does
+not. If a `locally` command starts failing to get a token
 mid-test, check `locally chaos identity show` before anything else.
 
 Database surfaces (`mysql`, `postgresql`, `sql`, `redis`) answer `403`, `429` and `500`
 with **the engine's own equivalent error**, not an HTTP status - a client sees what
 that engine would send.
+
+On `webapps`, `containerapps` and `functions`, the HTTP faults are answered **by the
+platform's front end, and the app never sees the request** - App Service's error pages
+for Web Apps, Envoy's replies (`local_rate_limited`, `RBAC: access denied`, `upstream
+connect error`) for Container Apps, and the Functions host's JSON errors for Function
+Apps. So an app's own logs show nothing for a faulted request; confirm a fault fired
+from what the client received.
 
 ## Faults by Surface
 
@@ -138,10 +187,10 @@ that engine would send.
 |---|---|
 | `403` / `429` / `500` | The service's own forbidden, throttled or server-error answer. On a database surface, the engine's equivalent. |
 | `outage` | Every matching request fails outright, as during a regional or provider outage. |
-| `drop-connection` | The connection is dropped before a response. With `--interval`, also cuts live connections. |
+| `drop-connection` | The connection is reset without an answer - no status, no body, `ECONNRESET`. With `--interval`, also resets live connections, with no close frame or goodbye. |
 | `latency` | A random delay before responding (needs a duration). With `--interval`, also stalls live connections. |
 | `incident` | Scheduled: the scope is unavailable for the rolled duration, then recovers. |
-| `disconnect` | Scheduled: live connections are closed cleanly, in the protocol's own terms, so the client reconnects. |
+| `disconnect` | Scheduled: live connections are closed cleanly, in the protocol's own terms (a WebSocket gets `1001 Going Away`), so the client reconnects. A live gRPC call on a site is reset with `RST_STREAM` instead, since its HTTP/2 connection is shared. |
 
 ### Gateways and sites
 
@@ -150,8 +199,8 @@ that engine would send.
 | `502` / `504` | The front end can't reach, or times out waiting for, the app behind it. |
 | `partial-response` | Headers and part of the body, then the connection is cut. |
 | `slow-body` | The response body is paced slowly (per 32 KiB). |
-| `cold-start` | Requests get the platform's warm-up `503` for the rolled duration, as an app starting from cold. |
-| `freeze` / `exit` / `restart` | Scheduled: the workload is paused for the duration, killed (its restart policy decides what's next), or restarted the way its own restart action does. On the database surfaces, `restart` restarts the server. |
+| `cold-start` | Whenever the app starts or restarts, requests get the platform's warm-up `503` until the rolled window closes. Not scheduled - it fires on the app's own starts, so pair it with `restart` to see it on demand. |
+| `freeze` / `exit` / `restart` | Scheduled: the workload is paused for the duration, killed (its restart policy decides what's next), or restarted the way its own restart action does. A freeze closes nothing - requests and WebSockets just go quiet until it resumes. On the database surfaces, `restart` restarts the server. |
 | `stream-reset` | Scheduled: live gRPC streams are reset with `RST_STREAM`. |
 
 ### Messaging and events
@@ -210,17 +259,21 @@ locally chaos storage 429 --percentage 0 --location london
 # Slow one storage account's blob endpoint by up to 800ms
 locally chaos storage latency --percentage 100 --millis 800 --name acct1:blob
 
-# Every 10 minutes, maybe take a Key Vault down for 30-120 seconds
+# Each vault rolls every 10 minutes (the first roll lands somewhere in the first 10):
+# on a hit it is down for 30-120 seconds
 locally chaos keyvault incident --percentage 50 --seconds 30-120 --interval 10m
 
-# Every 30 seconds, maybe freeze a container group for 5-20 seconds
+# Each container group rolls every 30s; on a hit it is frozen for 5-20 seconds
 locally chaos containerinstances freeze --percentage 50 --seconds 5-20 --interval 30s
 
 # Cut a quarter of live Service Bus connections every 30s
 locally chaos servicebus disconnect --percentage 25 --interval 30s
 
-# Fail Cosmos DB's london region over, so the SDK moves to the next region
+# Fail Cosmos DB's london region over within the next 2 minutes, so the SDK moves to the next region
 locally chaos cosmos failover --percentage 100 --seconds 60 --interval 2m --location london
+
+# Throttle one web app's API, leaving its pages and WebSockets alone
+locally chaos webapps 429 --percentage 100 --name my-app --traffic http --path /api/
 
 # Stop every sign-in from getting a token
 locally chaos identity outage --percentage 100
