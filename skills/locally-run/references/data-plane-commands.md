@@ -166,4 +166,13 @@ locally storage connection-string --name <storage account>
 locally servicebus connection-string --name <Service Bus namespace>
 locally eventhub connection-string --name <Event Hub namespace>
 locally iothub connection-string --name <IoT Hub>
+locally redis connection-string --name <Redis cache or Managed Redis cluster>
+locally mysql connection-string --name <MySQL Flexible Server>
+locally postgres connection-string --name <PostgreSQL Flexible Server>
 ```
+
+On the `redis`, `mysql` and `postgres` commands, `--name` also accepts a full resource
+ID, and `-g <resource group>` disambiguates a name that exists in more than one group.
+`locally redis connection-string` covers both Azure
+Cache for Redis and, since v2026.11, Azure Managed Redis, where it prints the connection
+string for the cluster's database.

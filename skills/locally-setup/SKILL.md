@@ -145,6 +145,19 @@ generically, and the fix is `locally setup` (or `locally certificate generate`) 
 generate a certificate that covers the current list. Re-running `locally setup` for this
 is safe, same as above - it isn't a destructive operation the user should hesitate over.
 
+v2026.11 is such a release: App Configuration moved to `*.azconfig.locally`, so a
+certificate generated before it doesn't cover the new domain, and `locally build`
+asks for it to be regenerated once. The one-line fix is:
+
+```bash
+locally certificate generate --update-config
+```
+
+`--update-config` points this installation at the new certificate without prompting.
+`--skip-certificate-check` (or `LOCALLY_SKIP_CERTIFICATE_CHECK=1`) gets past the
+check, but App Configuration clients then fail TLS on the new domain - regenerate
+rather than skip.
+
 ## Certificates
 
 `locally certificate` has three subcommands, none of which require Locally to already be
@@ -286,10 +299,14 @@ the feature is present and working, the plan doesn't include it.
 | Creating or deleting subscriptions | Standard |
 | Policy and governance | Standard |
 | Chaos (`locally chaos`) | Standard |
-| Cost estimation | Standard |
+| Cost estimation, including costs on the Architecture Diagram | Standard |
 | Minimum necessary permissions | Standard |
+| Snapshots (`locally snapshot`) | Standard |
+| Persistent mode (`locally build --persist`) | Standard |
+| Sharing snapshots with a team (`locally snapshot share`) | Team |
+| Management Groups and Tenants | Team |
 | Organisation policies | Team |
-| Location sets (`locally locations`) | Team |
+| Changing the location set (Regions page, Use Locations From), including Azure Public (Europe only / US only) | Team |
 | Edge zones | Team |
 | Unlimited subscriptions (Standard allows three) | Team |
 

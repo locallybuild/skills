@@ -1,6 +1,6 @@
 ---
 name: locally-ci
-description: Run Locally inside GitHub Actions using the locallybuild/setup-locally actions. Use when setting up CI that needs Locally, writing or fixing a workflow, or debugging why Locally fails to start in Actions. Covers OIDC trust setup, the id-token permission, plugin selection, teardown and log artifacts. Triggers on "github actions", "workflow", "CI", "setup-locally", "OIDC", "id-token", "run tests against locally in CI".
+description: Run Locally inside GitHub Actions using the locallybuild/setup-locally actions. Use when setting up CI that needs Locally, writing or fixing a workflow, or debugging why Locally fails to start in Actions. Covers OIDC trust setup, the id-token permission, plugin selection, teardown and log artifacts, and how `locally ci` signs in on other CI systems with OIDC or a CI Key. Triggers on "github actions", "workflow", "CI", "setup-locally", "OIDC", "id-token", "run tests against locally in CI", "CI Key", "LOCALLY_CI_KEY", "gitlab", "jenkins", "bamboo", "codebuild".
 ---
 
 # Locally CI
@@ -170,6 +170,38 @@ user without a stored secret - the job's OIDC token is what `setup-locally` pres
 
 Store the resulting UUID as a repository or organization variable (`vars.*`), not a
 secret - it identifies the team or user, it isn't a credential by itself.
+
+## CI Systems Other Than GitHub Actions
+
+This skill covers GitHub Actions through `setup-locally`, which always signs in with
+GitHub's OIDC token - so it needs `team-uuid` / `user-uuid`, and has no input for
+anything else. Elsewhere, `locally ci` is run directly, and since v2026.11 it can sign in
+two ways:
+
+- **OIDC, where the CI system can issue a token** - GitLab CI (`id_tokens`, detected
+  automatically), Jenkins with its OpenID Connect Provider plugin, or any other issuer
+  via `LOCALLY_OIDC_TOKEN` / `LOCALLY_OIDC_TOKEN_FILE`. Set exactly one of
+  `LOCALLY_TEAM_UUID` / `LOCALLY_USER_UUID`, as above.
+- **A CI Key, where it can't** - Bamboo, AWS CodeBuild, Jenkins without the OIDC plugin.
+  Create one for a team or for yourself in the Locally Account and store it in the CI
+  system's secret store as `LOCALLY_CI_KEY` (or point `LOCALLY_CI_KEY_FILE` at it). A CI
+  Key already says which team or user it belongs to, so neither UUID is needed.
+
+**Prefer OIDC wherever the CI system supports it**, and say so when someone reaches for a
+CI Key on GitHub Actions or GitLab: a CI Key is a long-lived secret that has to be
+stored and rotated, which is exactly what OIDC avoids. A CI Key expires after 90, 180 or
+365 days, and `locally ci` warns once it is within 14 days of expiring. A team or
+organisation can turn CI Keys off to require OIDC - a key refused for that reason is a
+policy, not a broken key.
+
+Treat a CI Key like any other credential: it is a secret (`secrets.*`, a masked
+variable), never a plain variable, and never pasted into a pipeline file. A key whose
+checksum or prefix doesn't match has been truncated or mangled in copying - copy it
+again rather than editing it.
+
+`locally ci` runs in the foreground until stopped, so start it in the background, wait
+for the endpoints it prints, and run `locally ci --stop` at the end of the job whatever
+its outcome - the equivalent of `teardown` with `if: always()`.
 
 ## Troubleshooting
 

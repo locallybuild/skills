@@ -278,8 +278,13 @@ value per target:
 ```
 
 `locally regions list` also reports which set is active, and warns when it has been
-replaced with a real cloud's names - the case where that safety net is gone. So does
-`locally locations`, which reports the active set and its region count and nothing else.
+replaced with a real cloud's names - the case where that safety net is gone. There is no
+`locally locations` command; `regions list` is the one to read.
+
+The set is changed from the dashboard's Regions page (Use Locations From), which since
+v2026.11 offers Azure Public (Europe only) and Azure Public (US only) as well as the whole
+of Azure Public. Europe only includes the UK regions; US only excludes Canada, Mexico and
+US Government.
 
 **Changing the set is not something to reach for.** It needs the Team plan, and it needs
 the installation to be empty: swapping the set replaces every region, and resources in a
@@ -312,6 +317,15 @@ Team and above are unlimited. Creating and deleting subscriptions needs Standard
 attempt past the cap is refused with the plan and the limit - `your current plan
 (Starter) allows a maximum of 1 subscription(s)` - which is a plan message, not a bug.
 Run `locally subscriptions list` and work with what is there.
+
+**Management Groups** (Team plan or above, since v2026.11) work from the Azure CLI,
+Terraform and the dashboard's Subscriptions page: they can be nested, subscriptions
+moved between them, and policies and role assignments assigned at a management group,
+with operations at management group and tenant scope recorded in the Activity Log. It
+is still under active development, so when something at management group scope
+misbehaves, check it with `locally-debug` before assuming the config is wrong. There is
+no `locally` subcommand for them - use `az account management-group` or the
+`azurerm_management_group` resources through `locally run`.
 
 ## Plugin Pre-Flight
 
