@@ -1,6 +1,6 @@
 ---
 name: locally-lifecycle
-description: Start, stop, restart and check a Locally instance. Use when Locally needs to be running and is not, when a command fails because nothing is listening, or when the user wants to stop or restart it. Covers why `locally build` is the only way to start one on a developer machine, how to tell when an instance is ready, and keeping resources and data across restarts with persistent mode and snapshots. Triggers on "start locally", "stop locally", "restart locally", "is locally running", "locally isn't running", "nothing listening", "connection refused", "persist", "keep my resources", "lost everything after restart", "snapshot", "save state", "restore state", "share a snapshot".
+description: Start, stop, restart and check a Locally instance. Use when Locally needs to be running and is not, when a command fails because nothing is listening, or when the user wants to stop or restart it. Covers why `locally build` is the only way to start one on a developer machine, how to tell when an instance is ready, and keeping resources and data across restarts with persistent mode. Triggers on "start locally", "stop locally", "restart locally", "is locally running", "locally isn't running", "nothing listening", "connection refused", "persist", "keep my resources", "lost everything after restart".
 ---
 
 # Locally Lifecycle
@@ -67,7 +67,7 @@ authoritative answer comes from the CLI, and give that command too.
 | Start interactively | `locally build --skip-browser` | Full-screen TUI. Run it in the user's own terminal - an agent cannot usefully run this at all. Include `--skip-browser` in a command you hand over, so the dashboard doesn't grab focus mid-task. |
 | Start in CI | `locally ci` | **CI only** - built for a prepared CI runner, not a developer machine. See Starting. |
 | Keep state across restarts | `locally build --skip-browser --persist` | Standard plan. Loads the last save, autosaves every 15 minutes, saves on Ctrl-C. |
-| Save / restore everything | `locally snapshot save` / `locally snapshot load <name>` | Standard plan. `load` **replaces** everything in the instance - confirm first. |
+| Checkpoint / roll back | `locally snapshot save` / `locally snapshot load <name>` | Standard plan. See `locally-snapshots`. |
 | Stop a CI instance | `locally ci --stop` | Only stops a `locally ci` instance, so CI only too. There is no `locally stop`. |
 | Target another instance | - not supported | Running more than one instance at a time isn't supported today. If you need it, ask in Locally's Discord. |
 
@@ -224,8 +224,8 @@ that's a product issue to report, not something to poll around here.
 
 **A restart empties the instance unless it was started with `--persist`.** Before
 asking the user to restart, consider whether they have resources or data they'd lose -
-and if they do, say so, and offer `locally snapshot save` first or `--persist` on the
-next start.
+and if they do, say so, and offer a snapshot first (`locally-snapshots`) or `--persist`
+on the next start.
 
 ## Keeping State Across Restarts
 
@@ -240,27 +240,8 @@ default is `default`); `--clear-state` alongside it starts that state empty.
 killed instead of stopped skips the shutdown save, so it comes back with the last
 autosave - another reason not to signal the process yourself.
 
-**Snapshots - `locally snapshot`.** A point-in-time copy of every resource and its data,
-saved in the Locally config directory:
-
-| Command | Does |
-|---|---|
-| `locally snapshot save [--name <n>] [--description <d>] [--passphrase]` | Takes a snapshot. Writes are paused while it's taken (clients get a 503 and retry). |
-| `locally snapshot list [--local]` | Lists saved snapshots, and those shared with your teams. |
-| `locally snapshot inspect <name\|path>` | What a snapshot holds, the plugins it needs, and whether a load would be refused - without loading it. |
-| `locally snapshot diff <a> [<b>]` | What changed between a snapshot and the instance now, or between two snapshots. `--json`, and `--exit-code` to fail a script on any difference. Credentials are reported as changed, never shown. |
-| `locally snapshot load <name\|path>` | **Replaces everything in the instance** with the snapshot. All-or-nothing: a refused load leaves the instance as it was. |
-| `locally snapshot share <name>` / `download <name>` | Share with, or fetch from, a Locally Team. Team plan or above; at most 500 MiB. |
-| `locally snapshot delete <name>` | Deletes a saved snapshot. |
-| `locally snapshot status` | Whether a save or load is running. |
-
-`save`, `load`, `inspect` and `diff` against the current state need a running instance.
-
-**`load` is destructive - confirm before running it**, and run `inspect` first when the
-snapshot came from someone else: it may need plugins installed, and those stay installed
-even if the load is then refused. **Snapshots contain credentials** - Key Vault values,
-keys, passwords - so a snapshot headed for a team should be saved with `--passphrase`
-(or `LOCALLY_SNAPSHOT_PASSPHRASE`); say so before sharing one.
+**Snapshots - `locally snapshot`.** Saving, restoring, comparing and sharing a
+point-in-time copy of everything in the instance is covered by `locally-snapshots`.
 
 ## When to Use Other Skills
 
@@ -270,5 +251,6 @@ keys, passwords - so a snapshot headed for a team should be saved with `--passph
 | An instance is running and you need to drive tools against it (`az`, Terraform, data-plane commands) | `locally-run` |
 | An instance is running but behaving unexpectedly | `locally-debug` |
 | Adapting a config to run against both Locally and Azure | `locally-adapt` |
+| Taking, restoring, comparing or sharing a snapshot | `locally-snapshots` |
 
 See `references/ports.md` for the full fixed port table.

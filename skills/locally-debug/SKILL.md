@@ -362,7 +362,7 @@ Keeping state is opt-in, and needs the Standard plan or above:
   minutes when something changed, and saves on shutdown. `--persist=<name>` keeps a
   separate saved state per project; `--clear-state` with it starts that state empty.
 - **`locally snapshot save` / `load`** captures everything at a point in time and
-  restores it later - see `locally-lifecycle`.
+  restores it later - see `locally-snapshots`.
 
 So when data is missing after a restart, first ask how the instance was started. A
 plain `locally build` explains it entirely. If it was started with `--persist`, check
